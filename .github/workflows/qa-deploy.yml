@@ -1,4 +1,4 @@
-# qa 브랜치에 병합되면 디버그 APK 를 굽고 Test Commander 에 올린 뒤 배포 신호를 보낸다 — 실행은 신호가 건다
+# qa 브랜치에 병합되면 디버그 APK 를 빌드하고 Test Commander 에 올린 뒤 배포 신호를 보낸다 — 실행은 신호가 건다
 name: QA 배포
 on:
   push:
