@@ -1,0 +1,55 @@
+# qa 브랜치에 병합되면 디버그 APK 를 굽고 Test Commander 에 올린 뒤 배포 신호를 보낸다 — 실행은 신호가 건다
+name: QA 배포
+on:
+  push:
+    branches: [qa]
+  workflow_dispatch:
+concurrency:
+  group: qa-deploy
+  cancel-in-progress: false
+permissions:
+  contents: read
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          java-version: 21
+          distribution: temurin
+      - uses: android-actions/setup-android@v3
+        with:
+          log-accepted-android-sdk-licenses: false
+      - id: no
+        run: echo "build=${GITHUB_SHA::7}-$(TZ=Asia/Seoul date +%Y%m%d%H%M)" >> "$GITHUB_OUTPUT"
+      # 빌드마다 서명이 같아야 폰에 덮어 깔린다 — 러너가 만드는 디버그 키는 매번 달라서 고정 키(DEBUG_KEYSTORE_B64)를 그 자리에 둔다
+      - name: 디버그 서명 키
+        env:
+          KS: ${{ secrets.DEBUG_KEYSTORE_B64 }}
+        run: |
+          mkdir -p ~/.android
+          if [ -n "$KS" ]; then printf %s "$KS" | base64 -d > ~/.android/debug.keystore; fi
+      - name: APK
+        run: |
+          echo "sdk.dir=$ANDROID_SDK_ROOT" > local.properties
+          ./gradlew --no-daemon assembleDebug
+          cp mastodon/build/outputs/apk/debug/mastodon-debug.apk mastodon-qa.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mastodon-qa-${{ steps.no.outputs.build }}
+          path: mastodon-qa.apk
+          retention-days: 14
+      - name: Commander 에 올리고 배포 신호
+        env:
+          BUILD: ${{ steps.no.outputs.build }}
+          QAHUB_CI_TOKEN: ${{ secrets.QAHUB_CI_TOKEN }}
+          QAHUB_DEPLOY_TOKEN: ${{ secrets.QAHUB_DEPLOY_TOKEN }}
+          BTS_DEPLOY_WEBHOOK: ${{ secrets.BTS_DEPLOY_WEBHOOK }}
+        run: |
+          [ -n "$QAHUB_CI_TOKEN" ] || { echo "QAHUB_CI_TOKEN 이 없어 올리기 · 신호를 건너뜀"; exit 0; }
+          curl --fail-with-body -sS -X POST -H "Authorization: Bearer $QAHUB_CI_TOKEN" -H 'Content-Type: application/octet-stream' \
+            --data-binary @mastodon-qa.apk "https://commander.maxihan.com/api/builds?env=qa&buildNo=$BUILD"
+          BODY=$(jq -cn --arg b "$BUILD" '{build:$b, services:["MTA"]}')
+          if [ -n "$BTS_DEPLOY_WEBHOOK" ]; then curl --fail-with-body -sS -o /dev/null -X POST -H 'Content-Type: application/json' -d "$BODY" "$BTS_DEPLOY_WEBHOOK"; fi
+          if [ -n "$QAHUB_DEPLOY_TOKEN" ]; then curl --fail-with-body -sS -X POST -H "Authorization: Bearer $QAHUB_DEPLOY_TOKEN" -H 'Content-Type: application/json' -d "$BODY" "https://commander.maxihan.com/api/projects/15/deploys"; fi
